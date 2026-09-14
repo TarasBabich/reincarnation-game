@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'REINCARNUM',
-  description: 'Game about reincarnation, power, wealth and influence',
+  title: 'AELORIA',
+  description: 'Dark fantasy action-platformer about an elven warrior and the World Tree',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
