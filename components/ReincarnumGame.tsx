@@ -1,266 +1,173 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-type Stats = { wealth: number; power: number; influence: number };
-type Enemy = { id: number; x: number; hp: number; maxHp: number; alive: boolean; type: 'grunt' | 'elite' };
-type Boss = { x: number; hp: number; maxHp: number; name: string; alive: boolean };
-type Player = { x: number; y: number; vy: number; hp: number; maxHp: number; facing: 1 | -1; onGround: boolean; invuln: number; attackCd: number };
+type Rect = { x:number; y:number; w:number; h:number };
+type Enemy = { x:number; y:number; hp:number; maxHp:number; alive:boolean; boss?:boolean };
+type Player = { x:number; y:number; vx:number; vy:number; hp:number; maxHp:number; facing:1|-1; grounded:boolean; attack:number; invuln:number };
 
-type Level = {
-  id: number;
-  title: string;
-  subtitle: string;
-  boss: string;
-  theme: string;
-  width: number;
-  enemies: Array<{ x: number; hp: number; type?: 'grunt' | 'elite' }>;
-  reward: Stats;
-};
+const W = 1280;
+const H = 720;
+const WORLD_W = 2600;
+const FLOOR_Y = 558;
+const BG = '/art/level1.jpg';
 
-const levels: Level[] = [
-  { id: 1, title: 'Розколоті простори', subtitle: 'Перший шанс', boss: 'Кам’яний Вартовий', theme: 'level-one', width: 2600, enemies: [{x:430,hp:34},{x:760,hp:34},{x:1120,hp:42},{x:1460,hp:42,type:'elite'},{x:1810,hp:48}], reward:{wealth:20,power:18,influence:8} },
-  { id: 2, title: 'Затонулий архів', subtitle: 'Капітал знань', boss: 'Хранитель Глибин', theme: 'level-two', width: 2750, enemies: [{x:470,hp:40},{x:820,hp:40},{x:1190,hp:46},{x:1510,hp:52,type:'elite'},{x:1910,hp:52}], reward:{wealth:30,power:16,influence:14} },
-  { id: 3, title: 'Забутий шпиль', subtitle: 'Влада', boss: 'Архонт Вежі', theme: 'level-three', width: 2850, enemies: [{x:450,hp:46},{x:790,hp:46},{x:1170,hp:54},{x:1560,hp:60,type:'elite'},{x:2010,hp:58}], reward:{wealth:18,power:34,influence:16} },
-  { id: 4, title: 'Місто завтрашнього дня', subtitle: 'Монополія', boss: 'Кібер-Титан', theme: 'level-four', width: 3000, enemies: [{x:520,hp:52},{x:910,hp:52},{x:1270,hp:58},{x:1690,hp:68,type:'elite'},{x:2130,hp:64}], reward:{wealth:42,power:22,influence:24} },
-  { id: 5, title: 'Дерево тисячі життів', subtitle: 'Масштаб', boss: 'Страж Втілень', theme: 'level-five', width: 3100, enemies: [{x:500,hp:58},{x:900,hp:58},{x:1330,hp:64},{x:1770,hp:74,type:'elite'},{x:2260,hp:70}], reward:{wealth:32,power:36,influence:32} },
-  { id: 6, title: 'Вершина втілень', subtitle: 'Особиста мета', boss: 'Володар Вершини', theme: 'level-six', width: 3250, enemies: [{x:560,hp:64},{x:980,hp:64},{x:1420,hp:72},{x:1900,hp:82,type:'elite'},{x:2410,hp:78}], reward:{wealth:60,power:60,influence:60} },
+const colliders: Rect[] = [
+  { x:0, y:558, w:760, h:162 },
+  { x:850, y:540, w:620, h:180 },
+  { x:1510, y:510, w:500, h:210 },
+  { x:2050, y:535, w:550, h:185 },
+  { x:530, y:448, w:215, h:34 },
+  { x:1180, y:415, w:220, h:34 },
+  { x:1730, y:392, w:230, h:34 },
 ];
 
-const SAVE_KEY = 'reincarnum-action-v2';
-const FLOOR = 360;
+const startEnemies = (): Enemy[] => [
+  { x:620, y:510, hp:40, maxHp:40, alive:true },
+  { x:1110, y:492, hp:50, maxHp:50, alive:true },
+  { x:1660, y:462, hp:60, maxHp:60, alive:true },
+  { x:2220, y:466, hp:260, maxHp:260, alive:true, boss:true },
+];
 
-const makeEnemies = (level: Level): Enemy[] => level.enemies.map((e, i) => ({ id:i, x:e.x, hp:e.hp, maxHp:e.hp, alive:true, type:e.type ?? 'grunt' }));
-const makeBoss = (level: Level): Boss => ({ x: level.width - 260, hp: 180 + level.id * 55, maxHp: 180 + level.id * 55, name: level.boss, alive:true });
+function overlap(a:Rect,b:Rect){ return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y; }
 
-export default function ReincarnumGame() {
-  const [levelIndex, setLevelIndex] = useState(0);
-  const level = levels[levelIndex];
-  const [stats, setStats] = useState<Stats>({ wealth:0, power:0, influence:0 });
-  const [history, setHistory] = useState<Array<Stats & { life:number }>>([]);
-  const [player, setPlayer] = useState<Player>({ x:120, y:FLOOR, vy:0, hp:100, maxHp:100, facing:1, onGround:true, invuln:0, attackCd:0 });
-  const [enemies, setEnemies] = useState<Enemy[]>(() => makeEnemies(levels[0]));
-  const [boss, setBoss] = useState<Boss>(() => makeBoss(levels[0]));
-  const [bossDefeated, setBossDefeated] = useState(false);
-  const [finished, setFinished] = useState(false);
-  const [deaths, setDeaths] = useState(0);
-  const [kills, setKills] = useState(0);
-  const keys = useRef<Record<string, boolean>>({});
+export default function ReincarnumGame(){
+  const canvasRef = useRef<HTMLCanvasElement|null>(null);
+  const bgRef = useRef<HTMLImageElement|null>(null);
+  const rafRef = useRef<number>(0);
+  const keys = useRef<Record<string,boolean>>({});
+  const player = useRef<Player>({ x:150,y:480,vx:0,vy:0,hp:100,maxHp:100,facing:1,grounded:false,attack:0,invuln:0 });
+  const enemies = useRef<Enemy[]>(startEnemies());
+  const camera = useRef(0);
+  const [hud,setHud] = useState({hp:100,boss:260,bossMax:260,kills:0,deaths:0});
+  const [won,setWon] = useState(false);
 
-  const powerBonus = Math.floor(stats.power / 35);
-  const damage = 18 + powerBonus * 3;
+  const reset = useCallback(()=>{
+    player.current = { x:150,y:480,vx:0,vy:0,hp:100,maxHp:100,facing:1,grounded:false,attack:0,invuln:0 };
+    enemies.current = startEnemies(); camera.current = 0; setWon(false);
+    setHud(h=>({hp:100,boss:260,bossMax:260,kills:0,deaths:h.deaths}));
+  },[]);
 
-  useEffect(() => {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return;
-    try {
-      const s = JSON.parse(raw);
-      const li = Math.min(Math.max(s.levelIndex ?? 0, 0), levels.length - 1);
-      setLevelIndex(li);
-      setStats(s.stats ?? { wealth:0, power:0, influence:0 });
-      setHistory(s.history ?? []);
-      setDeaths(s.deaths ?? 0);
-      setKills(s.kills ?? 0);
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ levelIndex, stats, history, deaths, kills }));
-  }, [levelIndex, stats, history, deaths, kills]);
-
-  const resetStage = useCallback((idx = levelIndex) => {
-    const l = levels[idx];
-    const maxHp = 100 + Math.floor(stats.power / 20) * 5;
-    setPlayer({ x:120, y:FLOOR, vy:0, hp:maxHp, maxHp, facing:1, onGround:true, invuln:0, attackCd:0 });
-    setEnemies(makeEnemies(l));
-    setBoss(makeBoss(l));
-    setBossDefeated(false);
-  }, [levelIndex, stats.power]);
-
-  useEffect(() => { resetStage(levelIndex); }, [levelIndex, resetStage]);
-
-  const attack = useCallback(() => {
-    setPlayer(p => {
-      if (p.attackCd > 0 || p.hp <= 0) return p;
-      const reach = 105;
-      const center = p.x + p.facing * 58;
-      setEnemies(es => es.map(e => {
-        if (!e.alive || Math.abs(e.x - center) > reach) return e;
-        const hp = Math.max(0, e.hp - damage);
-        if (hp === 0 && e.hp > 0) setKills(k => k + 1);
-        return { ...e, hp, alive: hp > 0 };
-      }));
-      setBoss(b => {
-        if (!b.alive || Math.abs(b.x - center) > 135) return b;
-        const hp = Math.max(0, b.hp - damage);
-        if (hp === 0 && b.hp > 0) setBossDefeated(true);
-        return { ...b, hp, alive: hp > 0 };
-      });
-      return { ...p, attackCd: 14 };
+  const doAttack = useCallback(()=>{
+    const p = player.current;
+    if(p.attack>0 || p.hp<=0) return;
+    p.attack = 12;
+    const hitX = p.x + (p.facing===1 ? 42 : -92);
+    const hit:Rect = {x:hitX,y:p.y+18,w:95,h:90};
+    let kills = 0;
+    enemies.current.forEach(e=>{
+      if(!e.alive) return;
+      const er:Rect={x:e.x-34,y:e.y-86,w:e.boss?100:70,h:e.boss?112:92};
+      if(overlap(hit,er)){
+        e.hp = Math.max(0,e.hp-(e.boss?22:28));
+        if(e.hp===0){e.alive=false;if(!e.boss)kills++;}
+      }
     });
-  }, [damage]);
+    const boss=enemies.current.find(e=>e.boss);
+    if(kills) setHud(h=>({...h,kills:h.kills+kills}));
+    if(boss) setHud(h=>({...h,boss:boss.hp}));
+    if(boss && !boss.alive) setWon(true);
+  },[]);
 
-  useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      const key = e.key.toLowerCase();
-      keys.current[key] = true;
-      if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) e.preventDefault();
-      if (key === 'j' || key === ' ') attack();
+  useEffect(()=>{
+    const img=new Image(); img.src=BG; img.onload=()=>{bgRef.current=img};
+    const down=(e:KeyboardEvent)=>{const k=e.key.toLowerCase();keys.current[k]=true;if(k===' '||k==='j')doAttack();};
+    const up=(e:KeyboardEvent)=>{keys.current[e.key.toLowerCase()]=false;};
+    window.addEventListener('keydown',down);window.addEventListener('keyup',up);
+    return()=>{window.removeEventListener('keydown',down);window.removeEventListener('keyup',up);};
+  },[doAttack]);
+
+  useEffect(()=>{
+    const canvas=canvasRef.current;if(!canvas)return;const ctx=canvas.getContext('2d',{alpha:false});if(!ctx)return;
+    let last=performance.now(), acc=0;
+    const step=1000/60;
+    const tick=(now:number)=>{
+      acc += Math.min(50,now-last); last=now;
+      while(acc>=step){ update(); acc-=step; }
+      draw(ctx,canvas); rafRef.current=requestAnimationFrame(tick);
     };
-    const up = (e: KeyboardEvent) => { keys.current[e.key.toLowerCase()] = false; };
-    window.addEventListener('keydown', down, { passive:false });
-    window.addEventListener('keyup', up);
-    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
-  }, [attack]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setPlayer(p => {
-        if (p.hp <= 0) return p;
-        let { x, y, vy, facing, onGround, invuln, attackCd } = p;
-        const left = keys.current['a'] || keys.current['arrowleft'];
-        const right = keys.current['d'] || keys.current['arrowright'];
-        const jump = keys.current['w'] || keys.current['arrowup'];
-        if (left) { x -= 8; facing = -1; }
-        if (right) { x += 8; facing = 1; }
-        if (jump && onGround) { vy = -18; onGround = false; }
-        vy += 1.25;
-        y += vy;
-        if (y >= FLOOR) { y = FLOOR; vy = 0; onGround = true; }
-        x = Math.max(40, Math.min(level.width - 80, x));
-        invuln = Math.max(0, invuln - 1);
-        attackCd = Math.max(0, attackCd - 1);
-        return { ...p, x, y, vy, facing, onGround, invuln, attackCd };
+    const update=()=>{
+      const p=player.current;if(p.hp<=0)return;
+      const left=keys.current['a']||keys.current['arrowleft'];
+      const right=keys.current['d']||keys.current['arrowright'];
+      const jump=keys.current['w']||keys.current['arrowup'];
+      p.vx=(left?-5.6:0)+(right?5.6:0); if(p.vx) p.facing=p.vx>0?1:-1;
+      if(jump&&p.grounded){p.vy=-13.5;p.grounded=false;}
+      p.vy=Math.min(17,p.vy+0.72); p.attack=Math.max(0,p.attack-1);p.invuln=Math.max(0,p.invuln-1);
+      p.x=Math.max(24,Math.min(WORLD_W-40,p.x+p.vx));
+      p.y += p.vy;
+      const body:Rect={x:p.x-22,y:p.y,w:44,h:88}; p.grounded=false;
+      for(const c of colliders){
+        if(overlap(body,c) && p.vy>=0 && body.y+body.h-p.vy<=c.y+8){p.y=c.y-88;p.vy=0;p.grounded=true;body.y=p.y;}
+      }
+      if(p.y>H+160){p.hp=0;}
+      enemies.current.forEach(e=>{
+        if(!e.alive)return;
+        if(!e.boss){ const dx=p.x-e.x; if(Math.abs(dx)<270)e.x+=Math.sign(dx)*0.7; }
+        if(Math.abs(p.x-e.x)<(e.boss?72:48)&&Math.abs((p.y+44)-(e.y-35))<90&&p.invuln===0){p.hp=Math.max(0,p.hp-(e.boss?16:9));p.invuln=40;setHud(h=>({...h,hp:p.hp}));}
       });
-    }, 30);
-    return () => window.clearInterval(timer);
-  }, [level.width]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setPlayer(p => {
-        if (p.hp <= 0 || p.invuln > 0) return p;
-        let hit = false;
-        for (const e of enemies) if (e.alive && Math.abs(e.x - p.x) < 62) hit = true;
-        const bossHit = boss.alive && Math.abs(boss.x - p.x) < 92;
-        if (!hit && !bossHit) return p;
-        const hp = Math.max(0, p.hp - (bossHit ? 18 : 10));
-        return { ...p, hp, invuln: 24 };
-      });
-    }, 180);
-    return () => window.clearInterval(timer);
-  }, [enemies, boss]);
-
-  useEffect(() => {
-    if (player.hp > 0) return;
-    const t = window.setTimeout(() => { setDeaths(d => d + 1); resetStage(); }, 900);
-    return () => window.clearTimeout(t);
-  }, [player.hp, resetStage]);
-
-  const finishLevel = (focus: keyof Stats) => {
-    const mult = focus === 'wealth' ? {wealth:24,power:0,influence:0} : focus === 'power' ? {wealth:0,power:24,influence:0} : {wealth:0,power:0,influence:24};
-    const next = {
-      wealth: stats.wealth + level.reward.wealth + mult.wealth,
-      power: stats.power + level.reward.power + mult.power,
-      influence: stats.influence + level.reward.influence + mult.influence,
+      camera.current=Math.max(0,Math.min(WORLD_W-W,p.x-410));
+      if(p.hp<=0){setHud(h=>({...h,hp:0,deaths:h.deaths+1}));setTimeout(reset,700);}
     };
-    setStats(next);
-    setHistory(h => [...h, { life:level.id, ...next }]);
-    setBossDefeated(false);
-    if (levelIndex === levels.length - 1) setFinished(true);
-    else setLevelIndex(i => i + 1);
-  };
 
-  const restartGame = () => {
-    localStorage.removeItem(SAVE_KEY);
-    setStats({wealth:0,power:0,influence:0});
-    setHistory([]); setDeaths(0); setKills(0); setFinished(false); setLevelIndex(0);
-    resetStage(0);
-  };
+    const draw=(c:CanvasRenderingContext2D,cv:HTMLCanvasElement)=>{
+      c.clearRect(0,0,W,H);
+      const bg=bgRef.current;
+      if(bg){
+        const scale=Math.max(H/bg.height,W/bg.width);
+        const bw=bg.width*scale,bh=bg.height*scale;
+        const bgCam=(camera.current/(WORLD_W-W))*Math.max(0,bw-W)*0.35;
+        c.drawImage(bg,-bgCam,(H-bh)/2,bw,bh);
+      } else {c.fillStyle='#06131b';c.fillRect(0,0,W,H);}
+      c.fillStyle='rgba(2,8,10,.18)';c.fillRect(0,0,W,H);
+      c.save();c.translate(-camera.current,0);
 
-  const camera = Math.max(0, Math.min(level.width - 1000, player.x - 380));
-  const historyData = useMemo(() => history.length ? history : [{life:0, wealth:0, power:0, influence:0}], [history]);
+      // world collision geometry is invisible in normal play
+      const p=player.current;
+      enemies.current.forEach(e=>{if(!e.alive)return;drawEnemy(c,e);});
+      drawHero(c,p);
+      c.restore();
+    };
+    rafRef.current=requestAnimationFrame(tick);
+    return()=>cancelAnimationFrame(rafRef.current);
+  },[reset]);
 
-  return (
-    <main className="action-shell">
-      <div className="top-hud">
-        <div><span className="eyebrow">ВТІЛЕННЯ {level.id}/6</span><strong>{level.title}</strong><small>{level.subtitle}</small></div>
-        <div className="hud-stats"><span>💰 {stats.wealth}</span><span>⚔ {stats.power}</span><span>♛ {stats.influence}</span></div>
-      </div>
+  const press=(key:string,on:boolean)=>{keys.current[key]=on;};
 
-      <section className={`action-viewport ${level.theme}`}>
-        <div className="world" style={{ width: level.width, transform:`translateX(${-camera}px)` }}>
-          <div className="parallax stars" />
-          <div className="parallax ruins" />
-          <div className="ground" />
+  return <main className="canvas-shell">
+    <canvas ref={canvasRef} width={W} height={H} className="game-canvas" />
+    <div className="canvas-hud">
+      <div className="brand"><b>REINCARNUM</b><span>ВТІЛЕННЯ 1/6 · РОЗКОЛОТІ ПРОСТОРИ</span></div>
+      <div className="life"><span>ЖИТТЯ {hud.hp}/100</span><i><b style={{width:`${hud.hp}%`}} /></i></div>
+      <div className="mini">Вороги {hud.kills}/3 · Реінкарнації {hud.deaths}</div>
+      <div className="bossbar"><span>КАМ’ЯНИЙ ВАРТОВИЙ</span><i><b style={{width:`${Math.max(0,hud.boss/hud.bossMax*100)}%`}} /></i></div>
+    </div>
+    <div className="touch touch-left">
+      <button onPointerDown={()=>press('a',true)} onPointerUp={()=>press('a',false)} onPointerCancel={()=>press('a',false)}>◀</button>
+      <button onPointerDown={()=>press('d',true)} onPointerUp={()=>press('d',false)} onPointerCancel={()=>press('d',false)}>▶</button>
+    </div>
+    <div className="touch touch-right">
+      <button onPointerDown={()=>press('w',true)} onPointerUp={()=>press('w',false)}>↑</button>
+      <button className="attack" onPointerDown={doAttack}>⚔</button>
+    </div>
+    {won&&<div className="win"><div><span>Бос переможений</span><h2>Нове втілення відкрито</h2><button onClick={reset}>Продовжити</button></div></div>}
+  </main>;
+}
 
-          {enemies.map(e => e.alive && (
-            <motion.div key={e.id} className={`enemy ${e.type}`} style={{ left:e.x, bottom:40 }} animate={{ y:[0,-4,0] }} transition={{ repeat:Infinity, duration:1.4 }}>
-              <div className="mini-hp"><i style={{width:`${(e.hp/e.maxHp)*100}%`}} /></div>
-              <div className="enemy-body">{e.type === 'elite' ? '◆' : '●'}</div>
-            </motion.div>
-          ))}
-
-          {boss.alive && (
-            <motion.div className="boss" style={{ left:boss.x, bottom:38 }} animate={{ y:[0,-8,0], rotate:[0,-1,1,0] }} transition={{repeat:Infinity,duration:1.8}}>
-              <div className="boss-name">{boss.name}</div>
-              <div className="boss-hp"><i style={{width:`${(boss.hp/boss.maxHp)*100}%`}} /></div>
-              <div className="boss-body">✦</div>
-            </motion.div>
-          )}
-
-          <motion.div className={`hero ${player.invuln>0?'hurt':''} ${player.attackCd>8?'attacking':''}`} style={{ left:player.x, bottom:410-player.y }} animate={{ scaleX:player.facing }}>
-            <div className="hero-aura" />
-            <div className="hero-body">♟</div>
-            <div className="sword">╱</div>
-          </motion.div>
-        </div>
-
-        <div className="player-panel">
-          <div className="hp-label"><span>ЖИТТЯ</span><b>{player.hp}/{player.maxHp}</b></div>
-          <div className="player-hp"><i style={{width:`${(player.hp/player.maxHp)*100}%`}} /></div>
-          <div className="progress-line"><i style={{width:`${Math.min(100,(player.x/(level.width-260))*100)}%`}} /></div>
-        </div>
-
-        {player.hp <= 0 && <div className="death-flash">РЕІНКАРНАЦІЯ...</div>}
-
-        <div className="mobile-controls">
-          <div className="move-controls"><button onPointerDown={()=>keys.current['a']=true} onPointerUp={()=>keys.current['a']=false} onPointerLeave={()=>keys.current['a']=false}>◀</button><button onPointerDown={()=>keys.current['d']=true} onPointerUp={()=>keys.current['d']=false} onPointerLeave={()=>keys.current['d']=false}>▶</button></div>
-          <div className="fight-controls"><button onPointerDown={()=>keys.current['w']=true} onPointerUp={()=>keys.current['w']=false}>↑</button><button className="attack-btn" onPointerDown={attack}>АТАКА</button></div>
-        </div>
-      </section>
-
-      <div className="lower-hud">
-        <span>Переможено ворогів: {kills}</span><span>Реінкарнацій: {deaths}</span><span>Бос: {boss.name}</span>
-      </div>
-
-      <AnimatePresence>
-        {bossDefeated && !finished && (
-          <motion.div className="modal-backdrop" initial={{opacity:0}} animate={{opacity:1}}>
-            <motion.div className="choice-modal" initial={{y:30,opacity:0}} animate={{y:0,opacity:1}}>
-              <div className="eyebrow">БОС ПЕРЕМОЖЕНИЙ</div><h2>{boss.name} повалений</h2>
-              <p>Обери, що перенести сильніше у наступне втілення.</p>
-              <div className="choice-grid"><button onClick={()=>finishLevel('wealth')}>Багатство +24</button><button onClick={()=>finishLevel('power')}>Могутність +24</button><button onClick={()=>finishLevel('influence')}>Вплив +24</button></div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {finished && (
-          <motion.div className="modal-backdrop" initial={{opacity:0}} animate={{opacity:1}}>
-            <motion.div className="choice-modal final-card" initial={{scale:.9,opacity:0}} animate={{scale:1,opacity:1}}>
-              <div className="eyebrow">ШІСТЬ ВТІЛЕНЬ ЗАВЕРШЕНО</div><h2>Вершина досягнута</h2>
-              <p>Ти пройшов усі світи, переміг шістьох босів і зберіг накопичену перевагу.</p>
-              <div className="final-stats"><b>💰 {stats.wealth}</b><b>⚔ {stats.power}</b><b>♛ {stats.influence}</b></div>
-              <div className="chart-wrap"><ResponsiveContainer width="100%" height={180}><LineChart data={historyData}><XAxis dataKey="life"/><YAxis/><Tooltip/><Line type="monotone" dataKey="wealth" stroke="#d9b85b"/><Line type="monotone" dataKey="power" stroke="#9ed7b0"/><Line type="monotone" dataKey="influence" stroke="#80b7e8"/></LineChart></ResponsiveContainer></div>
-              <button className="primary" onClick={restartGame}>Почати новий цикл</button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </main>
-  );
+function drawHero(c:CanvasRenderingContext2D,p:Player){
+  c.save();c.translate(p.x,p.y+88);c.scale(p.facing,1);
+  if(p.invuln>0)c.globalAlpha=.55;
+  c.shadowBlur=18;c.shadowColor='#4bd7ff';c.fillStyle='#16202a';
+  c.beginPath();c.moveTo(-18,-78);c.quadraticCurveTo(-45,-52,-36,-8);c.lineTo(18,-8);c.quadraticCurveTo(28,-45,10,-76);c.closePath();c.fill();
+  c.shadowBlur=0;c.fillStyle='#d9bd79';c.beginPath();c.arc(0,-82,10,0,Math.PI*2);c.fill();
+  c.strokeStyle='#f2d57b';c.lineWidth=4;c.beginPath();c.moveTo(10,-46);c.lineTo(p.attack>6?72:48,p.attack>6?-92:-66);c.stroke();
+  c.restore();
+}
+function drawEnemy(c:CanvasRenderingContext2D,e:Enemy){
+  c.save();c.translate(e.x,e.y);c.shadowBlur=e.boss?22:10;c.shadowColor=e.boss?'#ff9a33':'#75d6bb';c.fillStyle=e.boss?'#211914':'#16241f';
+  c.beginPath();c.moveTo(-30,-82);c.lineTo(-45,-24);c.lineTo(-22,0);c.lineTo(26,0);c.lineTo(42,-26);c.lineTo(28,-84);c.closePath();c.fill();
+  c.fillStyle=e.boss?'#d8963a':'#75aa8b';c.beginPath();c.arc(0,-88,e.boss?16:12,0,Math.PI*2);c.fill();
+  c.shadowBlur=0;c.fillStyle='#21090a';c.fillRect(-46,-116,92,7);c.fillStyle=e.boss?'#d94b42':'#65bd76';c.fillRect(-46,-116,92*(e.hp/e.maxHp),7);
+  c.restore();
 }
