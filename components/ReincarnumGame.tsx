@@ -1,173 +1,103 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-type Rect = { x:number; y:number; w:number; h:number };
-type Enemy = { x:number; y:number; hp:number; maxHp:number; alive:boolean; boss?:boolean };
-type Player = { x:number; y:number; vx:number; vy:number; hp:number; maxHp:number; facing:1|-1; grounded:boolean; attack:number; invuln:number };
-
-const W = 1280;
-const H = 720;
-const WORLD_W = 2600;
-const FLOOR_Y = 558;
-const BG = '/art/level1.jpg';
-
-const colliders: Rect[] = [
-  { x:0, y:558, w:760, h:162 },
-  { x:850, y:540, w:620, h:180 },
-  { x:1510, y:510, w:500, h:210 },
-  { x:2050, y:535, w:550, h:185 },
-  { x:530, y:448, w:215, h:34 },
-  { x:1180, y:415, w:220, h:34 },
-  { x:1730, y:392, w:230, h:34 },
-];
-
-const startEnemies = (): Enemy[] => [
-  { x:620, y:510, hp:40, maxHp:40, alive:true },
-  { x:1110, y:492, hp:50, maxHp:50, alive:true },
-  { x:1660, y:462, hp:60, maxHp:60, alive:true },
-  { x:2220, y:466, hp:260, maxHp:260, alive:true, boss:true },
-];
-
-function overlap(a:Rect,b:Rect){ return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y; }
+type Hud = { hp:number; boss:number; bossMax:number; kills:number; deaths:number };
 
 export default function ReincarnumGame(){
-  const canvasRef = useRef<HTMLCanvasElement|null>(null);
-  const bgRef = useRef<HTMLImageElement|null>(null);
-  const rafRef = useRef<number>(0);
-  const keys = useRef<Record<string,boolean>>({});
-  const player = useRef<Player>({ x:150,y:480,vx:0,vy:0,hp:100,maxHp:100,facing:1,grounded:false,attack:0,invuln:0 });
-  const enemies = useRef<Enemy[]>(startEnemies());
-  const camera = useRef(0);
-  const [hud,setHud] = useState({hp:100,boss:260,bossMax:260,kills:0,deaths:0});
+  const hostRef = useRef<HTMLDivElement|null>(null);
+  const gameRef = useRef<any>(null);
+  const [hud,setHud] = useState<Hud>({hp:100,boss:260,bossMax:260,kills:0,deaths:0});
   const [won,setWon] = useState(false);
 
-  const reset = useCallback(()=>{
-    player.current = { x:150,y:480,vx:0,vy:0,hp:100,maxHp:100,facing:1,grounded:false,attack:0,invuln:0 };
-    enemies.current = startEnemies(); camera.current = 0; setWon(false);
-    setHud(h=>({hp:100,boss:260,bossMax:260,kills:0,deaths:h.deaths}));
-  },[]);
-
-  const doAttack = useCallback(()=>{
-    const p = player.current;
-    if(p.attack>0 || p.hp<=0) return;
-    p.attack = 12;
-    const hitX = p.x + (p.facing===1 ? 42 : -92);
-    const hit:Rect = {x:hitX,y:p.y+18,w:95,h:90};
-    let kills = 0;
-    enemies.current.forEach(e=>{
-      if(!e.alive) return;
-      const er:Rect={x:e.x-34,y:e.y-86,w:e.boss?100:70,h:e.boss?112:92};
-      if(overlap(hit,er)){
-        e.hp = Math.max(0,e.hp-(e.boss?22:28));
-        if(e.hp===0){e.alive=false;if(!e.boss)kills++;}
-      }
-    });
-    const boss=enemies.current.find(e=>e.boss);
-    if(kills) setHud(h=>({...h,kills:h.kills+kills}));
-    if(boss) setHud(h=>({...h,boss:boss.hp}));
-    if(boss && !boss.alive) setWon(true);
+  useEffect(()=>{
+    const onHud=(e:Event)=>setHud((e as CustomEvent<Hud>).detail);
+    const onWin=()=>setWon(true);
+    window.addEventListener('reincarnum-hud',onHud as EventListener);
+    window.addEventListener('reincarnum-win',onWin);
+    return()=>{window.removeEventListener('reincarnum-hud',onHud as EventListener);window.removeEventListener('reincarnum-win',onWin);};
   },[]);
 
   useEffect(()=>{
-    const img=new Image(); img.src=BG; img.onload=()=>{bgRef.current=img};
-    const down=(e:KeyboardEvent)=>{const k=e.key.toLowerCase();keys.current[k]=true;if(k===' '||k==='j')doAttack();};
-    const up=(e:KeyboardEvent)=>{keys.current[e.key.toLowerCase()]=false;};
-    window.addEventListener('keydown',down);window.addEventListener('keyup',up);
-    return()=>{window.removeEventListener('keydown',down);window.removeEventListener('keyup',up);};
-  },[doAttack]);
+    let disposed=false;
+    (async()=>{
+      const Phaser=(await import('phaser')).default;
+      if(disposed||!hostRef.current)return;
 
-  useEffect(()=>{
-    const canvas=canvasRef.current;if(!canvas)return;const ctx=canvas.getContext('2d',{alpha:false});if(!ctx)return;
-    let last=performance.now(), acc=0;
-    const step=1000/60;
-    const tick=(now:number)=>{
-      acc += Math.min(50,now-last); last=now;
-      while(acc>=step){ update(); acc-=step; }
-      draw(ctx,canvas); rafRef.current=requestAnimationFrame(tick);
-    };
+      class MainScene extends Phaser.Scene{
+        player:any; cursors:any; keys:any; platforms:any; enemies:any[]=[]; boss:any; facing=1; attackReady=true; kills=0; deaths=0; bossHp=260; bossMax=260; controls={left:false,right:false,jump:false};
+        constructor(){super('main');}
+        preload(){this.load.image('bg','/art/level1.jpg');}
+        create(){
+          this.physics.world.setBounds(0,0,2600,720);
+          this.cameras.main.setBounds(0,0,2600,720);
+          const bg=this.add.image(1300,360,'bg').setDisplaySize(2600,720).setScrollFactor(.18);
+          bg.setTint(0xddeeff);
 
-    const update=()=>{
-      const p=player.current;if(p.hp<=0)return;
-      const left=keys.current['a']||keys.current['arrowleft'];
-      const right=keys.current['d']||keys.current['arrowright'];
-      const jump=keys.current['w']||keys.current['arrowup'];
-      p.vx=(left?-5.6:0)+(right?5.6:0); if(p.vx) p.facing=p.vx>0?1:-1;
-      if(jump&&p.grounded){p.vy=-13.5;p.grounded=false;}
-      p.vy=Math.min(17,p.vy+0.72); p.attack=Math.max(0,p.attack-1);p.invuln=Math.max(0,p.invuln-1);
-      p.x=Math.max(24,Math.min(WORLD_W-40,p.x+p.vx));
-      p.y += p.vy;
-      const body:Rect={x:p.x-22,y:p.y,w:44,h:88}; p.grounded=false;
-      for(const c of colliders){
-        if(overlap(body,c) && p.vy>=0 && body.y+body.h-p.vy<=c.y+8){p.y=c.y-88;p.vy=0;p.grounded=true;body.y=p.y;}
+          const g=this.add.graphics();
+          g.fillStyle(0x17202b,1).fillRoundedRect(0,0,44,88,12);g.lineStyle(3,0xe6c874,1).strokeRoundedRect(4,4,36,80,10);g.generateTexture('hero',44,88);g.clear();
+          g.fillStyle(0x173228,1).fillRoundedRect(0,0,56,76,12);g.lineStyle(3,0x6ec9a0,1).strokeRoundedRect(3,3,50,70,10);g.generateTexture('enemy',56,76);g.clear();
+          g.fillStyle(0x21150f,1).fillRoundedRect(0,0,96,124,18);g.lineStyle(5,0xd9983d,1).strokeRoundedRect(4,4,88,116,16);g.generateTexture('boss',96,124);g.destroy();
+
+          this.platforms=this.physics.add.staticGroup();
+          const rects=[[380,640,760,160],[1160,630,620,180],[1760,615,500,210],[2325,627,550,185],[638,465,215,34],[1290,432,220,34],[1845,409,230,34]];
+          rects.forEach(([x,y,w,h])=>{const r=this.add.rectangle(x,y,w,h,0x000000,0.001);this.physics.add.existing(r,true);this.platforms.add(r);});
+
+          this.player=this.physics.add.sprite(150,470,'hero').setCollideWorldBounds(true).setDepth(5);
+          this.player.setMaxVelocity(320,900);this.player.setDragX(1300);
+          this.physics.add.collider(this.player,this.platforms);
+          this.cameras.main.startFollow(this.player,true,.08,.08,-260,60);
+          this.cameras.main.setDeadzone(360,220);
+
+          [620,1110,1660].forEach((x,i)=>{const e=this.physics.add.sprite(x,430-i*12,'enemy').setData('hp',40+i*10).setData('maxHp',40+i*10).setDepth(4);e.setCollideWorldBounds(true);this.physics.add.collider(e,this.platforms);this.enemies.push(e);});
+          this.boss=this.physics.add.sprite(2220,420,'boss').setData('hp',260).setDepth(4);this.boss.setCollideWorldBounds(true);this.physics.add.collider(this.boss,this.platforms);
+
+          this.physics.add.overlap(this.player,this.enemies,()=>this.damagePlayer(8),undefined,this);
+          this.physics.add.overlap(this.player,this.boss,()=>this.damagePlayer(14),undefined,this);
+          this.cursors=this.input.keyboard?.createCursorKeys();
+          this.keys=this.input.keyboard?.addKeys('A,D,W,SPACE,J');
+
+          window.addEventListener('reincarnum-input',this.onInput as EventListener);
+          window.addEventListener('reincarnum-attack',this.onAttack as EventListener);
+          this.events.once(Phaser.Scenes.Events.SHUTDOWN,()=>{window.removeEventListener('reincarnum-input',this.onInput as EventListener);window.removeEventListener('reincarnum-attack',this.onAttack as EventListener);});
+          this.emitHud();
+        }
+        onInput=(e:Event)=>{const d=(e as CustomEvent<{key:string;down:boolean}>).detail;(this.controls as any)[d.key]=d.down;};
+        onAttack=()=>this.attack();
+        emitHud(){window.dispatchEvent(new CustomEvent('reincarnum-hud',{detail:{hp:Math.max(0,Math.round(this.player?.getData('hp')??100)),boss:this.bossHp,bossMax:this.bossMax,kills:this.kills,deaths:this.deaths}}));}
+        damagePlayer(amount:number){if(!this.player.active||this.player.getData('hurt'))return;const hp=(this.player.getData('hp')??100)-amount;this.player.setData('hp',hp).setData('hurt',true).setTint(0xff7777);this.time.delayedCall(350,()=>{if(this.player.active)this.player.clearTint().setData('hurt',false);});if(hp<=0){this.deaths++;this.scene.restart();}else this.emitHud();}
+        attack(){if(!this.attackReady||!this.player.active)return;this.attackReady=false;this.time.delayedCall(240,()=>this.attackReady=true);const px=this.player.x;const dir=this.facing;this.player.setAngle(dir>0?10:-10);this.time.delayedCall(100,()=>this.player.active&&this.player.setAngle(0));
+          this.enemies.forEach(e=>{if(!e.active)return;if(Math.abs(e.x-(px+dir*55))<105&&Math.abs(e.y-this.player.y)<100){const hp=e.getData('hp')-28;e.setData('hp',hp).setTint(0xffcc88);this.time.delayedCall(90,()=>e.active&&e.clearTint());if(hp<=0){e.destroy();this.kills++;this.emitHud();}}});
+          if(this.boss.active&&Math.abs(this.boss.x-(px+dir*70))<145&&Math.abs(this.boss.y-this.player.y)<130){this.bossHp=Math.max(0,this.bossHp-22);this.boss.setData('hp',this.bossHp).setTint(0xffaa55);this.time.delayedCall(100,()=>this.boss.active&&this.boss.clearTint());this.emitHud();if(this.bossHp<=0){this.boss.destroy();window.dispatchEvent(new Event('reincarnum-win'));}}
+        }
+        update(){if(!this.player?.active)return;const body=this.player.body;const left=this.controls.left||this.cursors?.left?.isDown||this.keys?.A?.isDown;const right=this.controls.right||this.cursors?.right?.isDown||this.keys?.D?.isDown;const jump=this.controls.jump||this.cursors?.up?.isDown||this.keys?.W?.isDown;
+          if(left){this.player.setVelocityX(-260);this.facing=-1;this.player.setFlipX(true);}else if(right){this.player.setVelocityX(260);this.facing=1;this.player.setFlipX(false);}else this.player.setVelocityX(0);
+          if(jump&&body.blocked.down){this.player.setVelocityY(-520);this.controls.jump=false;}
+          if(Phaser.Input.Keyboard.JustDown(this.keys?.SPACE)||Phaser.Input.Keyboard.JustDown(this.keys?.J))this.attack();
+          this.enemies.forEach(e=>{if(!e.active)return;const dx=this.player.x-e.x;if(Math.abs(dx)<260)e.setVelocityX(Math.sign(dx)*45);else e.setVelocityX(0);});
+          if(this.boss?.active){const dx=this.player.x-this.boss.x;if(Math.abs(dx)<330)this.boss.setVelocityX(Math.sign(dx)*62);else this.boss.setVelocityX(0);}
+        }
       }
-      if(p.y>H+160){p.hp=0;}
-      enemies.current.forEach(e=>{
-        if(!e.alive)return;
-        if(!e.boss){ const dx=p.x-e.x; if(Math.abs(dx)<270)e.x+=Math.sign(dx)*0.7; }
-        if(Math.abs(p.x-e.x)<(e.boss?72:48)&&Math.abs((p.y+44)-(e.y-35))<90&&p.invuln===0){p.hp=Math.max(0,p.hp-(e.boss?16:9));p.invuln=40;setHud(h=>({...h,hp:p.hp}));}
-      });
-      camera.current=Math.max(0,Math.min(WORLD_W-W,p.x-410));
-      if(p.hp<=0){setHud(h=>({...h,hp:0,deaths:h.deaths+1}));setTimeout(reset,700);}
-    };
 
-    const draw=(c:CanvasRenderingContext2D,cv:HTMLCanvasElement)=>{
-      c.clearRect(0,0,W,H);
-      const bg=bgRef.current;
-      if(bg){
-        const scale=Math.max(H/bg.height,W/bg.width);
-        const bw=bg.width*scale,bh=bg.height*scale;
-        const bgCam=(camera.current/(WORLD_W-W))*Math.max(0,bw-W)*0.35;
-        c.drawImage(bg,-bgCam,(H-bh)/2,bw,bh);
-      } else {c.fillStyle='#06131b';c.fillRect(0,0,W,H);}
-      c.fillStyle='rgba(2,8,10,.18)';c.fillRect(0,0,W,H);
-      c.save();c.translate(-camera.current,0);
+      gameRef.current=new Phaser.Game({type:Phaser.AUTO,parent:hostRef.current,width:1280,height:720,backgroundColor:'#020507',physics:{default:'arcade',arcade:{gravity:{x:0,y:1250},debug:false}},scene:MainScene,scale:{mode:Phaser.Scale.FIT,autoCenter:Phaser.Scale.CENTER_BOTH}});
+      const sceneReady=()=>{const s=gameRef.current?.scene?.getScene('main');if(s?.player){s.player.setData('hp',100);s.emitHud?.();}else setTimeout(sceneReady,100);};sceneReady();
+    })();
+    return()=>{disposed=true;gameRef.current?.destroy(true);gameRef.current=null;};
+  },[]);
 
-      // world collision geometry is invisible in normal play
-      const p=player.current;
-      enemies.current.forEach(e=>{if(!e.alive)return;drawEnemy(c,e);});
-      drawHero(c,p);
-      c.restore();
-    };
-    rafRef.current=requestAnimationFrame(tick);
-    return()=>cancelAnimationFrame(rafRef.current);
-  },[reset]);
-
-  const press=(key:string,on:boolean)=>{keys.current[key]=on;};
+  const press=(key:'left'|'right'|'jump',down:boolean)=>window.dispatchEvent(new CustomEvent('reincarnum-input',{detail:{key,down}}));
+  const attack=()=>window.dispatchEvent(new Event('reincarnum-attack'));
 
   return <main className="canvas-shell">
-    <canvas ref={canvasRef} width={W} height={H} className="game-canvas" />
+    <div ref={hostRef} className="phaser-host" />
     <div className="canvas-hud">
       <div className="brand"><b>REINCARNUM</b><span>ВТІЛЕННЯ 1/6 · РОЗКОЛОТІ ПРОСТОРИ</span></div>
       <div className="life"><span>ЖИТТЯ {hud.hp}/100</span><i><b style={{width:`${hud.hp}%`}} /></i></div>
       <div className="mini">Вороги {hud.kills}/3 · Реінкарнації {hud.deaths}</div>
       <div className="bossbar"><span>КАМ’ЯНИЙ ВАРТОВИЙ</span><i><b style={{width:`${Math.max(0,hud.boss/hud.bossMax*100)}%`}} /></i></div>
     </div>
-    <div className="touch touch-left">
-      <button onPointerDown={()=>press('a',true)} onPointerUp={()=>press('a',false)} onPointerCancel={()=>press('a',false)}>◀</button>
-      <button onPointerDown={()=>press('d',true)} onPointerUp={()=>press('d',false)} onPointerCancel={()=>press('d',false)}>▶</button>
-    </div>
-    <div className="touch touch-right">
-      <button onPointerDown={()=>press('w',true)} onPointerUp={()=>press('w',false)}>↑</button>
-      <button className="attack" onPointerDown={doAttack}>⚔</button>
-    </div>
-    {won&&<div className="win"><div><span>Бос переможений</span><h2>Нове втілення відкрито</h2><button onClick={reset}>Продовжити</button></div></div>}
+    <div className="touch touch-left"><button onPointerDown={()=>press('left',true)} onPointerUp={()=>press('left',false)} onPointerCancel={()=>press('left',false)}>◀</button><button onPointerDown={()=>press('right',true)} onPointerUp={()=>press('right',false)} onPointerCancel={()=>press('right',false)}>▶</button></div>
+    <div className="touch touch-right"><button onPointerDown={()=>press('jump',true)} onPointerUp={()=>press('jump',false)}>↑</button><button className="attack" onPointerDown={attack}>⚔</button></div>
+    {won&&<div className="win"><div><span>Бос переможений</span><h2>Нове втілення відкрито</h2><button onClick={()=>location.reload()}>Продовжити</button></div></div>}
   </main>;
-}
-
-function drawHero(c:CanvasRenderingContext2D,p:Player){
-  c.save();c.translate(p.x,p.y+88);c.scale(p.facing,1);
-  if(p.invuln>0)c.globalAlpha=.55;
-  c.shadowBlur=18;c.shadowColor='#4bd7ff';c.fillStyle='#16202a';
-  c.beginPath();c.moveTo(-18,-78);c.quadraticCurveTo(-45,-52,-36,-8);c.lineTo(18,-8);c.quadraticCurveTo(28,-45,10,-76);c.closePath();c.fill();
-  c.shadowBlur=0;c.fillStyle='#d9bd79';c.beginPath();c.arc(0,-82,10,0,Math.PI*2);c.fill();
-  c.strokeStyle='#f2d57b';c.lineWidth=4;c.beginPath();c.moveTo(10,-46);c.lineTo(p.attack>6?72:48,p.attack>6?-92:-66);c.stroke();
-  c.restore();
-}
-function drawEnemy(c:CanvasRenderingContext2D,e:Enemy){
-  c.save();c.translate(e.x,e.y);c.shadowBlur=e.boss?22:10;c.shadowColor=e.boss?'#ff9a33':'#75d6bb';c.fillStyle=e.boss?'#211914':'#16241f';
-  c.beginPath();c.moveTo(-30,-82);c.lineTo(-45,-24);c.lineTo(-22,0);c.lineTo(26,0);c.lineTo(42,-26);c.lineTo(28,-84);c.closePath();c.fill();
-  c.fillStyle=e.boss?'#d8963a':'#75aa8b';c.beginPath();c.arc(0,-88,e.boss?16:12,0,Math.PI*2);c.fill();
-  c.shadowBlur=0;c.fillStyle='#21090a';c.fillRect(-46,-116,92,7);c.fillStyle=e.boss?'#d94b42':'#65bd76';c.fillRect(-46,-116,92*(e.hp/e.maxHp),7);
-  c.restore();
 }
