@@ -16,11 +16,11 @@ export default function ReincarnumGame(){
   useEffect(()=>{
     const onHud=(e:Event)=>setHud((e as CustomEvent<Hud>).detail);
     const onWin=()=>setWon(true);
-    window.addEventListener('reincarnum-hud',onHud as EventListener);
-    window.addEventListener('reincarnum-win',onWin);
+    window.addEventListener('aeloria-hud',onHud as EventListener);
+    window.addEventListener('aeloria-win',onWin);
     return()=>{
-      window.removeEventListener('reincarnum-hud',onHud as EventListener);
-      window.removeEventListener('reincarnum-win',onWin);
+      window.removeEventListener('aeloria-hud',onHud as EventListener);
+      window.removeEventListener('aeloria-win',onWin);
     };
   },[]);
 
@@ -58,13 +58,11 @@ export default function ReincarnumGame(){
           this.physics.world.setBounds(0,0,WORLD_W,WORLD_H);
           this.cameras.main.setBounds(0,0,WORLD_W,WORLD_H);
 
-          // A real painted level is the visual world. Physics geometry is invisible.
           this.add.image(WORLD_W/2,WORLD_H/2,'bg')
             .setDisplaySize(WORLD_W,WORLD_H)
             .setScrollFactor(1)
             .setDepth(-20);
 
-          // Lightweight shadow creature texture for ordinary enemies.
           const g=this.add.graphics();
           g.fillStyle(0x101a1b,.94);
           g.fillEllipse(28,42,48,68);
@@ -126,11 +124,11 @@ export default function ReincarnumGame(){
           this.cursors=this.input.keyboard?.createCursorKeys();
           this.keys=this.input.keyboard?.addKeys('A,D,W,SPACE,J');
 
-          window.addEventListener('reincarnum-input',this.onInput as EventListener);
-          window.addEventListener('reincarnum-attack',this.onAttack as EventListener);
+          window.addEventListener('aeloria-input',this.onInput as EventListener);
+          window.addEventListener('aeloria-attack',this.onAttack as EventListener);
           this.events.once(Phaser.Scenes.Events.SHUTDOWN,()=>{
-            window.removeEventListener('reincarnum-input',this.onInput as EventListener);
-            window.removeEventListener('reincarnum-attack',this.onAttack as EventListener);
+            window.removeEventListener('aeloria-input',this.onInput as EventListener);
+            window.removeEventListener('aeloria-attack',this.onAttack as EventListener);
           });
 
           this.emitHud();
@@ -144,7 +142,7 @@ export default function ReincarnumGame(){
         onAttack=()=>this.attack();
 
         emitHud(){
-          window.dispatchEvent(new CustomEvent('reincarnum-hud',{detail:{
+          window.dispatchEvent(new CustomEvent('aeloria-hud',{detail:{
             hp:Math.max(0,Math.round(this.player?.getData('hp')??100)),
             boss:this.bossHp,
             bossMax:this.bossMax,
@@ -175,13 +173,7 @@ export default function ReincarnumGame(){
 
           const px=this.player.x;
           const dir=this.facing;
-          this.tweens.add({
-            targets:this.player,
-            angle:dir>0?8:-8,
-            duration:70,
-            yoyo:true,
-            ease:'Sine.easeOut'
-          });
+          this.tweens.add({targets:this.player,angle:dir>0?8:-8,duration:70,yoyo:true,ease:'Sine.easeOut'});
 
           this.enemies.forEach(e=>{
             if(!e.active)return;
@@ -207,7 +199,7 @@ export default function ReincarnumGame(){
             if(this.bossHp<=0){
               this.tweens.add({targets:this.boss,alpha:0,scaleX:.4,scaleY:.4,duration:420,onComplete:()=>{
                 this.boss.destroy();
-                window.dispatchEvent(new Event('reincarnum-win'));
+                window.dispatchEvent(new Event('aeloria-win'));
               }});
             }
           }
@@ -220,23 +212,11 @@ export default function ReincarnumGame(){
           const right=this.controls.right||this.cursors?.right?.isDown||this.keys?.D?.isDown;
           const jump=this.controls.jump||this.cursors?.up?.isDown||this.keys?.W?.isDown;
 
-          if(left){
-            this.player.setVelocityX(-270);
-            this.facing=-1;
-            this.player.setFlipX(true);
-          }else if(right){
-            this.player.setVelocityX(270);
-            this.facing=1;
-            this.player.setFlipX(false);
-          }else{
-            this.player.setVelocityX(0);
-          }
+          if(left){this.player.setVelocityX(-270);this.facing=-1;this.player.setFlipX(true);}
+          else if(right){this.player.setVelocityX(270);this.facing=1;this.player.setFlipX(false);}
+          else this.player.setVelocityX(0);
 
-          if(jump&&body.blocked.down){
-            this.player.setVelocityY(-520);
-            this.controls.jump=false;
-          }
-
+          if(jump&&body.blocked.down){this.player.setVelocityY(-520);this.controls.jump=false;}
           if(Phaser.Input.Keyboard.JustDown(this.keys?.SPACE)||Phaser.Input.Keyboard.JustDown(this.keys?.J))this.attack();
 
           this.enemies.forEach(e=>{
@@ -274,16 +254,16 @@ export default function ReincarnumGame(){
     };
   },[]);
 
-  const press=(key:'left'|'right'|'jump',down:boolean)=>window.dispatchEvent(new CustomEvent('reincarnum-input',{detail:{key,down}}));
-  const attack=()=>window.dispatchEvent(new Event('reincarnum-attack'));
+  const press=(key:'left'|'right'|'jump',down:boolean)=>window.dispatchEvent(new CustomEvent('aeloria-input',{detail:{key,down}}));
+  const attack=()=>window.dispatchEvent(new Event('aeloria-attack'));
 
   return <main className="canvas-shell">
     <div ref={hostRef} className="phaser-host" />
 
     <div className="canvas-hud">
-      <div className="brand"><b>REINCARNUM</b><span>ВТІЛЕННЯ 1/6 · РОЗКОЛОТІ ПРОСТОРИ</span></div>
-      <div className="life"><span>ЖИТТЯ {hud.hp}/100</span><i><b style={{width:`${hud.hp}%`}} /></i></div>
-      <div className="mini">Вороги {hud.kills}/3 · Реінкарнації {hud.deaths}</div>
+      <div className="brand"><b>AELORIA</b><span>РОЗДІЛ 1/6 · РОЗКОЛОТІ ГАЇ</span></div>
+      <div className="life"><span>ЗДОРОВ’Я {hud.hp}/100</span><i><b style={{width:`${hud.hp}%`}} /></i></div>
+      <div className="mini">Вороги {hud.kills}/3 · Поразки {hud.deaths}</div>
       <div className="bossbar"><span>КАМ’ЯНИЙ ВАРТОВИЙ</span><i><b style={{width:`${Math.max(0,hud.boss/hud.bossMax*100)}%`}} /></i></div>
     </div>
 
@@ -297,6 +277,6 @@ export default function ReincarnumGame(){
       <button className="attack" onPointerDown={attack}>⚔</button>
     </div>
 
-    {won&&<div className="win"><div><span>БОС ПЕРЕМОЖЕНИЙ</span><h2>Нове втілення відкрито</h2><button onClick={()=>location.reload()}>Продовжити</button></div></div>}
+    {won&&<div className="win"><div><span>КАМ’ЯНОГО ВАРТОВОГО ПЕРЕМОЖЕНО</span><h2>Сила Світового Дерева пробуджена</h2><button onClick={()=>location.reload()}>Продовжити шлях</button></div></div>}
   </main>;
 }
